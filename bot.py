@@ -19,11 +19,9 @@ from telebot.types import (
 
 # ─────────────────────── НАСТРОЙКИ ───────────────────────
 
-# Токен теперь берется ТОЛЬКО из переменных окружения Render
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
 if not BOT_TOKEN:
-    raise ValueError("❌ ОШИБКА: Переменная BOT_TOKEN не найдена! Добавь её в Environment на Render.")
+    raise ValueError("❌ ОШИБКА: Переменная BOT_TOKEN не найдена!")
 
 OWNER_ID = 861423393
 VERIFY_TIMEOUT_SECONDS = 300
@@ -112,63 +110,41 @@ def extract_name_from_url(url):
         return f"{name_with_spaces} #{numbers}"
     return "Подарок"
 
+# НОВЫЙ УЛУЧШЕННЫЙ ПАРСЕР
 def parse_offer_command(text):
     body = re.sub(r'^(/|\.)\s*(gift|offer|heisey|nft|сделка|buy)\s*', '', text, flags=re.IGNORECASE).strip()
     if not body: return None
 
-    quoted = re.findall(r'"([^"]*)"', body)
-    without_quotes = re.sub(r'"[^"]*"', "", body).strip()
-
-    if len(quoted) >= 2:
-        name = quoted[0]
-        url = normalize_url(quoted[1])
-        amount_part = without_quotes.split()[0] if without_quotes else ""
-    elif len(quoted) == 1:
-        name = quoted[0]
-        rest = without_quotes.split()
-        url = normalize_url(rest[0]) if rest else None
-        amount_part = rest[1] if len(rest) >= 2 else ""
+    # Ищем ссылку в тексте
+    url_match = re.search(r'(https?://\S+|t\.me/\S+|@\w+)', body)
+    if not url_match:
+        return None
+        
+    url_raw = url_match.group(1)
+    url = normalize_url(url_raw)
+    
+    # Всё, что было до ссылки - это имя
+    name_part = body[:url_match.start()].strip().strip('"').strip("'")
+    # Всё, что было после ссылки - это сумма
+    amount_part = body[url_match.end():].strip()
+    
+    # Очищаем сумму от букв (убираем stars, gram и тд)
+    amount = re.sub(r'[^\d]', '', amount_part)
+    
+    # Если после ссылки цифр нет, ищем их в начале (например "100 stars t.me/...")
+    if not amount:
+        amount = re.sub(r'[^\d]', '', name_part)
+        name_part = "" 
+        
+    if not amount:
+        return None
+        
+    # Если имя не указано, вытаскиваем из ссылки
+    if not name_part:
+        name = extract_name_from_url(url)
     else:
-        parts = body.split()
-        if len(parts) == 1: return None
-        elif len(parts) == 2:
-            url = normalize_url(parts[0])
-            amount_part = parts[1].lower().replace("stars", "").replace("звезд", "").replace("gram", "").replace("грам", "").strip()
-            name = extract_name_from_url(url)
-        else:
-            name = " ".join(parts[:-2])
-            url = normalize_url(parts[-2])
-            amount_part = parts[-1].lower().replace("stars", "").replace("звезд", "").replace("gram", "").replace("грам", "").strip()
-
-    amount = re.sub(r"\D", "", amount_part) if amount_part else ""
-    if not url or not amount: return None
-    return name, url, amount
-
-def parse_inline_query(raw):
-    parts = [p.strip() for p in re.split(r"[|,]", raw or "") if p.strip()]
-    if len(parts) == 1:
-        text = raw.strip()
-        url_match = re.search(r'(https?://\S+|t\.me/\S+|@\w+)', text)
-        if url_match:
-            url_raw = url_match.group(1)
-            name = text[:url_match.start()].strip()
-            amount_raw = text[url_match.end():].strip().lower().replace("stars", "").replace("звезд", "").replace("gram", "").replace("грам", "").strip()
-            if not name: name = extract_name_from_url(normalize_url(url_raw))
-        else:
-            words = text.split()
-            if len(words) >= 3:
-                name = " ".join(words[:-2])
-                url_raw = words[-2]
-                amount_raw = words[-1]
-            else:
-                name, url_raw, amount_raw = text, "", ""
-    else:
-        name = parts[0]
-        url_raw = parts[1] if len(parts) > 1 else ""
-        amount_raw = parts[2] if len(parts) > 2 else ""
-    amount = re.sub(r"\D", "", amount_raw)
-    url = normalize_url(url_raw) if url_raw else ""
-    if not name and url: name = extract_name_from_url(url)
+        name = name_part
+        
     return name, url, amount
 
 # ─────────────────────── ТЕКСТЫ ───────────────────────
@@ -333,7 +309,7 @@ def handle_business_message(message):
         send_business_message(
             message.chat.id, 
             "❌ Неверный формат.\n\n"
-            "Используй: .buy ссылка 1200 stars", 
+            "Используй: /gift ссылка 1200 stars", 
             conn_id
         )
         return
@@ -384,7 +360,8 @@ def handle_inline_query(query):
             bot.answer_inline_query(query.id, [InlineQueryResultArticle(id="err", title="❌ Оффер не найден", description="", input_message_content=InputTextMessageContent(message_text="Оффер не найден"))], cache_time=0)
             return
 
-    name, url, amount = parse_inline_query(raw)
+    # Используем новый парсер и для инлайна
+    name, url, amount = parse_offer_command(f"/gift {raw}")
     results = []
 
     if name and url and amount:
@@ -398,7 +375,7 @@ def handle_inline_query(query):
             )
         )
     else:
-        results.append(InlineQueryResultArticle(id="h", title="Формат", description="", input_message_content=InputTextMessageContent(message_text="Формат: @бот Название | ссылка | 100")))
+        results.append(InlineQueryResultArticle(id="h", title="Формат", description="", input_message_content=InputTextMessageContent(message_text="Формат: @бот ссылка 100")))
 
     bot.answer_inline_query(query.id, results, cache_time=0)
 
